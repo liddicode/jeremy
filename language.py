@@ -14,6 +14,22 @@ class Rule:
     # we need some way of defining a context. E.g. maybe the rule only needs three words to apply, but some might need the entire text being used.
     pass
 
+class LocalWordRule(Rule):
+
+    def __init__(self, function):
+        self.function = function
+
+    def apply(self, word):
+        return self.function(word)
+
+class ContextWordRule(Rule):
+
+    def __init__(self, function):
+        self.function = function
+
+    def apply(self, phrase: list[Word]):
+        return self.function(phrase)
+
 class Language:
     def __init__(self, name, phonemes, default_script=None):
         self.name = name

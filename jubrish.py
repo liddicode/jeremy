@@ -1,8 +1,9 @@
 import sys
 from unicodedata import category
 
-from language import Script, Language, Rule
+from language import Script, Language, Rule, LocalWordRule, ContextWordRule, Word, Phoneme
 
+import pandas as pd
 
 
 B = "U+A7FA"
@@ -67,9 +68,10 @@ def codepoint_to_char(codepoint):
 phoneme_origins = {}
 phoneme_map = {}
 
-for name, var in {
+ipa_to_unicode_no = {
     'b': B,
     'c': C,
+    'ʧ': CH,
     'tʃ': CH,
     'ʃ': SH,
     'ð': TH,
@@ -78,6 +80,7 @@ for name, var in {
     'f': F,
     'g': G,
     'h': H,
+    'ʤ': J,
     'dʒ': J,
     'ʒ': JJ,
     'l': L,
@@ -109,15 +112,20 @@ for name, var in {
 'ʉ': OOW,
     'ʌ': UH,
     'ː': 'DOUBLE',
-}.items():
+}
+
+
+combine_y = 
+
+for ipa, unicode in ipa_to_unicode_no.items():
     try:
-        char, origin = codepoint_to_char(var)
-    except Exception:
+        char, origin = codepoint_to_char(unicode)
+    except ValueError:
         # Keep the original string and mark origin as unknown if parsing fails.
-        char = var
-        origin = None
-    phoneme_map[name] = char
-    phoneme_origins[name] = origin
+        char = unicode
+        origin = unicode
+    phoneme_map[ipa] = char
+    phoneme_origins[ipa] = origin
 
 
 
@@ -165,17 +173,11 @@ class PhonemeBasedScript:
         return self.collapse(word) if collapse else word
 
 
-
-
-
-print(phoneme_map.values)
-# --- pronunciation lookup and conversion utilities ---
-import csv
-import re
+import re, csv
 import unicodedata
 from pathlib import Path
 
-CSV_PRON_PATH = Path(__file__).parent / 'receipt_reader' / 'my data.csv'
+CSV_PRON_PATH = Path(__file__).parent / 'words_ipa.csv'
 
 
 def load_pron_dict(csv_path=CSV_PRON_PATH):
@@ -209,15 +211,17 @@ def normalize_ipa_token(tok):
     # decompose and remove combining marks (accents)
     s = unicodedata.normalize('NFD', tok)
     s = ''.join(ch for ch in s if unicodedata.category(ch) != 'Mn')
-    # remove length markers and stress marks
-    s = s.replace('ː', '').replace('ˈ', '').replace('ˌ', '').replace('ˑ', '')
+    # do not remove the IPA long length mark 'ː' here; keep it so we can
+    # convert it to a combining overline attached to the preceding glyph.
+    # remove only stress marks and other non-length marks
+    s = s.replace('ˈ', '').replace('ˌ', '').replace('ˑ', '')
     s = s.strip()
     return s
 
 
 def ipa_string_to_tokens(ipa_string):
     """Split an IPA string into tokens and return list of (orig, base).
-
+S
     orig is the original token from the CSV (with diacritics), base is a
     normalized form used for lookup (diacritics and stress removed). The
     conversion will prefer the normalized form when looking up in
@@ -239,23 +243,51 @@ def phoneme_tokens_to_glyphs(tokens, phoneme_map_local=None):
     """Convert a sequence of (orig, base) tokens to glyph characters.
 
     Lookup order: base (normalized) -> orig (raw) -> fall back to orig string.
-    Returns a concatenated string of glyphs / fallbacks.
+    Handles the IPA length mark 'ː' by adding a combining overline U+0305
+    onto the preceding glyph (or onto the mapped glyph for the token).
     """
     if phoneme_map_local is None:
         phoneme_map_local = phoneme_map
     out = []
+    COMBINING_OVERLINE = '\u0305'
     for orig, base in tokens:
-        # try normalized base first
+        # If token is just a standalone length mark, apply to previous glyph
+        if orig == 'ː' or base == 'ː':
+            if out:
+                out[-1] = out[-1] + COMBINING_OVERLINE
+            else:
+                # nothing to attach to; append the combining mark so it's visible
+                out.append(COMBINING_OVERLINE)
+            continue
+
+        # detect if the token contains a length mark (e.g., "aː")
+        length_present = 'ː' in base or 'ː' in orig
+        # strip length marks for lookup
+        base_core = base.replace('ː', '')
+        orig_core = orig.replace('ː', '')
+
         glyph = None
-        if base in phoneme_map_local:
+        if base_core and base_core in phoneme_map_local:
+            glyph = phoneme_map_local[base_core]
+        elif orig_core and orig_core in phoneme_map_local:
+            glyph = phoneme_map_local[orig_core]
+        elif base in phoneme_map_local:
             glyph = phoneme_map_local[base]
         elif orig in phoneme_map_local:
             glyph = phoneme_map_local[orig]
+
         if glyph is not None:
-            out.append(glyph)
+            # attach combining overline if length present
+            if length_present:
+                out.append(glyph + COMBINING_OVERLINE)
+            else:
+                out.append(glyph)
         else:
-            # missing mapping: append original IPA token so it's visible
-            out.append(orig)
+            # missing mapping: append original IPA token (without length mark if present)
+            fallback = orig_core if length_present else orig
+            if length_present:
+                fallback = fallback + COMBINING_OVERLINE
+            out.append(fallback)
     return ''.join(out)
 
 
@@ -289,7 +321,7 @@ def text_to_jubrish(text, pron_dict):
 if __name__ == '__main__':
     # simple CLI: either take the rest of argv as the string or prompt the user
     import sys
-    pron = load_pron_dict()
+    pron = load_pron_dict(CSV_PRON_PATH)
     if len(sys.argv) > 1:
         inp = ' '.join(sys.argv[1:])
     else:
